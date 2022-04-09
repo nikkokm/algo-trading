@@ -6,7 +6,7 @@ import pandas as pd
 
 
 # TODO: Does this get future or spot price??
-def historical_prices(symbols, interval, start, end):
+def historical_prices(symbols, interval, start, end, client):
 
     # YYYY-MM-DD (string) format on start and end or timestamps
 
@@ -38,7 +38,7 @@ def historical_prices(symbols, interval, start, end):
     prices_final.reset_index(drop=True, inplace=True)
     return prices_final
 
-test = historical_prices(['BTCUSDT', 'ETHUSDT'], '1h', '2021-02-03', '2021-02-04')
+#test = historical_prices(['BTCUSDT', 'ETHUSDT'], '1h', '2021-02-03', '2021-02-04')
 
 
 
