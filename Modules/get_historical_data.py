@@ -38,7 +38,6 @@ def historical_prices(symbols, interval, start, end, client):
     prices_final.reset_index(drop=True, inplace=True)
     return prices_final
 
-#test = historical_prices(['BTCUSDT', 'ETHUSDT'], '1h', '2021-02-03', '2021-02-04')
 
 
 
