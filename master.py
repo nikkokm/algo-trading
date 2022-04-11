@@ -17,4 +17,5 @@ if __name__ == '__main__':
     }
 
     strat = normalizedRatio(n=72, interval='1h', ticker_list=tickers_to_trade, pair_map=pair_map, client=client)
-    param_map = strat.fit()
+    param_map = strat.fit()  # TODO: Instead of returning a dict, maybe return a normalizer function, or define another method in the class to normalize
+

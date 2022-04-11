@@ -49,6 +49,9 @@ class normalizedRatio:
 
             df_trimmed.reset_index(drop=True, inplace=True)
 
+        else:
+            pass
+
         # Create new DataFrame with price ratios
         df_ratio = pd.DataFrame(columns=list(df.columns), index=[i for i in range(len(self.map.keys())*min_length)])
         df_ratio['Open Time'] = df['Open Time'].unique()
@@ -58,7 +61,7 @@ class normalizedRatio:
                 if col == 'Ticker':
                     df_ratio[col] = f'{k}/{v}'
                 else:
-                    df_ratio[col] = df_trimmed[df_trimmed['Ticker'] == k][col] / df_trimmed[df_trimmed['Ticker'] == v][col]
+                    df_ratio[col] = df_trimmed[df_trimmed['Ticker'] == k][col].astype(float).values / df_trimmed[df_trimmed['Ticker'] == v][col].astype(float).values
 
         # Compute mu and sigma of all ratios
         # For now, we are going to strictly use the Open price for this.
