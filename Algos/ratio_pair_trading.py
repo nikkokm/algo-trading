@@ -49,6 +49,10 @@ def main():
         twm.start()
         twm.start_multiplex_socket(callback=process_messages, streams=streams)
 
+        # This runs after
+        for i in range(10):
+            print(i)
+
     except:
         twm.stop()
         print('total fatal error in except in main(), bro')
