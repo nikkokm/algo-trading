@@ -1,6 +1,7 @@
 import os
 from Strategies.pairs_trading import normalizedRatio
 from Modules.configure_api import set_envrionment_vars
+from Modules.algo_logger import initiate_logger
 from binance.client import Client
 from binance import ThreadedWebsocketManager
 from time import sleep
@@ -10,7 +11,9 @@ from time import sleep
 
 
 def start_multiplex_socket():
+    global twm
     try:
+        twm = ThreadedWebsocketManager(api_key=api_key, api_secret=api_secret)
         twm.start()
         twm.start_multiplex_socket(callback=process_messages, streams=streams)
         return True
@@ -52,7 +55,9 @@ def process_messages(msg):
 
 def main():
     global param_map, streamed_data, twm, streams, api_key, api_secret
-    global socket_status, run_algo
+    global socket_status, run_algo, logger
+
+    logger = initiate_logger(os.path.basename(__file__))
 
     set_envrionment_vars()
     run_algo = True
@@ -72,21 +77,22 @@ def main():
             client = Client(api_key, api_secret)
             strat = normalizedRatio(n=72, interval='1h', ticker_list=tickers_to_trade, pair_map=pair_map, client=client)
             param_map = strat.fit()
-            twm = ThreadedWebsocketManager(api_key=api_key, api_secret=api_secret)
             socket_status = start_multiplex_socket()
 
             while socket_status is True:  # and twm.is_alive() is True: ???
                 socket_status = run_trade_logic()
 
-        except:
+        except Exception as e:
             twm.stop()
             print('total fatal error in except in main(), bro')
             run_algo = False
+            logger.critical(e, exc_info=True)
+            logger.handlers.clear()
             # TODO: logging and notifying via emial
             # TODO: Here we can set conditions (or have different except statements) to set run_algo to False and quit
             # TODO: Before we quit, we might want to exit all open positions
 
-        print('if this runs, socket_status is False, i.e. the socket died / closed')
+
 
 
 if __name__ == '__main__':
