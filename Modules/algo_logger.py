@@ -5,7 +5,7 @@ import sys
 
 def initiate_log_file():
     timestamp = datetime.date.today().strftime('%Y%m%d')
-    path = " FULL PATH TO FOLDER WITH LOG FILES"
+    path = " FULL PATH TO FOLDER WITH LOG FILES" # TODO: CHANGE
 
     if not os.path.exists(rf'{path}\{timestamp[:-2]}'):
         os.makedirs(rf'{path}\{timestamp[:-2]}')
