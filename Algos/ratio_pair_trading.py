@@ -66,14 +66,6 @@ def start_multiplex_socket():
         return False
 
 
-def normalizer(ratio):
-    """
-    Take a ratio of prices and make it standard normal, using param map
-    :return: standardized ratio
-    """
-    return
-
-
 def run_trade_logic():
     try:
         print('doing some real trading in here yooo')
@@ -96,7 +88,7 @@ def run_trade_logic():
 
 
 def process_market_messages(msg):
-    global socket_status, df_market_messages
+    global socket_status, df_market_messages, df_most_recent_ratios
 
     # If we disconnected and could not reconnect
     if msg['data']['e'] == 'error':
@@ -142,7 +134,25 @@ def process_market_messages(msg):
 
         # The rest of this code block will be less reusable
         # Drop cols we do not need and compute ratio of prices by matching nearest close prices for each pair
+        df_market_messages = df_market_messages[['Event time', 'Ticker', 'Close price']].copy()
+        df_market_messages.sort_values(by=['Event time', 'Ticker'], ascending=False, inplace=True)
 
+        # We have "duplicates" in some rows because we discard the millisecond part of the timestamp
+        df_market_messages = df_market_messages[~df_market_messages.duplicated(subset=['Event time', 'Ticker'], keep='first')]
+        df_market_messages.reset_index(drop=True, inplace=True)
+
+        # When starting the socket, we will have the case where we don't have a datapoint for every ticker
+        if set(tickers_to_trade) != set(df_market_messages['Ticker']):
+            return
+
+        # Iterate over pair_map and compute ratios
+        for (k, v) in pair_map.items():
+            df_most_recent_ratios[f'{k}/{v}'].iloc[0] = (df_market_messages[df_market_messages['Ticker'] == k].iloc[0]['Close price'] /
+                                                         df_market_messages[df_market_messages['Ticker'] == v].iloc[0]['Close price'])
+
+        # Normalize the ratios using param_map
+        for col in df_most_recent_ratios.columns:
+            df_most_recent_ratios[col] = df_most_recent_ratios[col].apply(lambda x: (x-param_map[f'{col}_mu'])/param_map[f'{col}_sigma'])
 
 #import pytz
 #timezone = pytz.timezone('Europe/Oslo')
@@ -150,35 +160,41 @@ def process_market_messages(msg):
 
 
 def main():
-    global param_map, streamed_data, twm, streams, api_key, api_secret, client
-    global socket_status, run_algo, logger, tickers_to_trade
-    global df_market_messages
-
-    recalibrate_frequency = 24  # In hours
-    run_timestamp = datetime.datetime.now()
-    df_market_messages = pd.DataFrame()
-    next_recalibration_timestamp = run_timestamp + datetime.timedelta(hours=recalibrate_frequency)
-
-    # logger = initiate_logger(os.path.basename(__file__))
-
     set_envrionment_vars(testnet=True)
 
-    run_algo = True
+    # Algo Settings
+    global api_key, api_secret, streams, tickers_to_trade, pair_map
+
     api_key = os.environ.get('binance_api')
     api_secret = os.environ.get('binance_secret')
+    streams = ['btcusdt_perpetual@continuousKline_1h', 'ethusdt_perpetual@continuousKline_1h']
     tickers_to_trade = ['BTCUSDT', 'ETHUSDT']
-
     pair_map = {
         'BTCUSDT': 'ETHUSDT'
     }
 
-    streams = ['btcusdt_perpetual@continuousKline_1h', 'ethusdt_perpetual@continuousKline_1h']
+    recalibrate_frequency = 24  # In hours
+
+    # Data and other objects
+    # TODO: twm need not be declared global in main() ?
+    global param_map, twm, client, logger, df_market_messages, df_most_recent_ratios
+
+    # logger = initiate_logger(os.path.basename(__file__))
+    df_market_messages = pd.DataFrame()
+    df_most_recent_ratios = pd.DataFrame(columns=[f'{k}/{v}' for k, v in pair_map.items()],
+                                         index=[0])
+
+    # Algo flags
+    global run_algo, socket_status
+    run_algo = True
+
+    run_timestamp = datetime.datetime.now()
+    next_recalibration_timestamp = run_timestamp + datetime.timedelta(hours=recalibrate_frequency)
 
     while run_algo is True:
 
         # First check that Binance is live
         status = check_system_status()
-
         while status == 1:
             sleep(600)
             status = check_system_status()
@@ -186,16 +202,12 @@ def main():
 
         try:
             client = Client(api_key, api_secret, testnet=True)
-
-            # strat = normalizedRatio(n=72, interval='1h', ticker_list=tickers_to_trade, pair_map=pair_map, client=client)
-            # param_map = strat.fit()
-
+            strat = normalizedRatio(n=72, interval='1h', ticker_list=tickers_to_trade, pair_map=pair_map, client=client)
+            param_map = strat.fit()
             socket_status = start_multiplex_socket()
-
             prepare_for_trading()
-
-            counter = 0
-            while socket_status is True and counter < 10:  # and twm.is_alive() is True: ??? or maybe "and keep_trading
+            counter = 0  # TODO: Delete the counter crap for production
+            while socket_status is True and counter < 10:
 
                 if datetime.datetime.now() >= next_recalibration_timestamp:
                     # Break out of inner loop to re-fit strategy
@@ -231,5 +243,5 @@ def main():
         # TODO: Before we quit, we might want to exit all open positions
 
 
-if __name__ == '__main__':
-    main()
+#if __name__ == '__main__':
+#    main()

@@ -7,7 +7,7 @@ class normalizedRatio:
     def __init__(self, n, interval, ticker_list, pair_map, client):
         """
         :param n: (int) amount of periods to use for normalization
-        :param ticker_list: (lst) list of symbols
+        :param ticker_list: (lst) list of symbols/tickers
         :param pair_map: (dict) mapping of which pairs to trade
         """
         self.n = n
@@ -21,7 +21,7 @@ class normalizedRatio:
     def fit(self):
         start = datetime.datetime(2003,1,1).timestamp()  # Grabs all data available, essentially
         end = datetime.datetime.now().timestamp()
-        df = historical_prices(self.ticker_list, self.interval, start, end, self.client)
+        df = historical_prices(self.ticker_list, self.interval, start, end, self.client, type='futures')
 
         # Only keep the the n last data points
         df_trimmed = pd.DataFrame()
