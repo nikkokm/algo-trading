@@ -6,6 +6,7 @@ import pandas as pd
 
 
 # TODO: Does this get future or spot price??
+# TODO: Use timezones (either pytz or dateparser) to make the date part of the code more elegant
 def historical_prices(symbols, interval, start, end, client):
 
     # YYYY-MM-DD (string) format on start and end or timestamps

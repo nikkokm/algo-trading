@@ -13,14 +13,21 @@ from binance.enums import *
 """ HELPER FUNCTIONS """
 
 
+def prepare_for_trading():
+    # Set margin type
+    # Set leverage
+    # Multi-asset view?
+    # all these thingies
+    pass
+
+
 def check_system_status():
     # Technically does not hit the testnet if using testnet client, but both baseurls are on the same domain...
     response = client.get_system_status()
-    return response['status'] # if 0: normal. if 1: system maintenance
+    return response['status']  # if 0: normal. if 1: system maintenance
 
 
 def cancel_open_orders():
-
     for i in tickers_to_trade:
         client.futures_cancel_all_open_orders(symbol=i)
 
@@ -35,16 +42,10 @@ def close_all_positions():
             if position['symbol'] == ticker and float(position['positionAmt']) != 0:
                 position_amount = float(position['positionAmt'])
 
-
-                #if to_trade > 0:
-                #    side = SIDE_BUY
-                #else:
-                #    side = SIDE_SELL
-
                 client.futures_create_order(symbol=ticker,
-                                           side=SIDE_SELL if position_amount > 0 else SIDE_BUY,
-                                           type=ORDER_TYPE_MARKET,
-                                           quantity=position_amount)
+                                            side=SIDE_SELL if position_amount > 0 else SIDE_BUY,
+                                            type=ORDER_TYPE_MARKET,
+                                            quantity=position_amount)
     return
 
 
@@ -95,7 +96,7 @@ def run_trade_logic():
 
 
 def process_market_messages(msg):
-    global socket_status
+    global socket_status, df_market_messages
 
     # If we disconnected and could not reconnect
     if msg['data']['e'] == 'error':
@@ -106,19 +107,59 @@ def process_market_messages(msg):
         socket_status = start_multiplex_socket()
 
     else:
-        print(msg)
+        # Part of this code block is reusable
+        market_data_cols = ['Event time',
+                            'Ticker',
+                            'Kline open time',
+                            'Kline close time',
+                            'Open price',
+                            'Close price',
+                            'High price',
+                            'Low price',
+                            'Volume']
+        # Websocket message sub-fields under the "k" key. Must match with market_data_cols
+        k_fields_to_grab = ['t', 'T', 'o', 'c', 'h', 'l', 'v']
+
+        # Create row to insert
+        row = [msg['data']['E'], msg['data']['ps']]
+        row.extend([msg['data']['k'][i] for i in k_fields_to_grab])
+
+        sub_frame = pd.DataFrame(data=[row], columns=market_data_cols)
+
+        # Change dtype to float and int
+        sub_frame[['Open price', 'Close price', 'High price', 'Low price', 'Volume']] = sub_frame[['Open price', 'Close price', 'High price', 'Low price', 'Volume']].astype(float)
+
+        # Convert timestamps to aware datestime objects. tz = 'Europe/Oslo'
+        time_cols = [i for i in sub_frame.columns if ('time' in i)]
+
+        for col in time_cols:
+            sub_frame[col] = pd.to_datetime(sub_frame[col].astype(str).str[:-3], unit='s').dt.tz_localize('UTC').dt.tz_convert('Europe/Oslo')
+
+        df_market_messages = pd.concat([df_market_messages, sub_frame], ignore_index=True)
+
+        # Prevent df_master from growing past 100 rows, only grab the last 100
+        df_market_messages = df_market_messages.iloc[-100:]
+
+        # The rest of this code block will be less reusable
+        # Drop cols we do not need and compute ratio of prices by matching nearest close prices for each pair
+
+
+#import pytz
+#timezone = pytz.timezone('Europe/Oslo')
+#datetime.datetime.fromtimestamp(1650019591, tz=timezone)
 
 
 def main():
     global param_map, streamed_data, twm, streams, api_key, api_secret, client
     global socket_status, run_algo, logger, tickers_to_trade
+    global df_market_messages
 
     recalibrate_frequency = 24  # In hours
-
     run_timestamp = datetime.datetime.now()
+    df_market_messages = pd.DataFrame()
     next_recalibration_timestamp = run_timestamp + datetime.timedelta(hours=recalibrate_frequency)
 
-    #logger = initiate_logger(os.path.basename(__file__))
+    # logger = initiate_logger(os.path.basename(__file__))
 
     set_envrionment_vars(testnet=True)
 
@@ -131,7 +172,7 @@ def main():
         'BTCUSDT': 'ETHUSDT'
     }
 
-    streams = ['btcusdt_perpetual@kcontinuousKine_1h', 'ethusdt_perpetual@continuousKline_1h']
+    streams = ['btcusdt_perpetual@continuousKline_1h', 'ethusdt_perpetual@continuousKline_1h']
 
     while run_algo is True:
 
@@ -143,15 +184,16 @@ def main():
             status = check_system_status()
             # TODO: Logging
 
-
         try:
             client = Client(api_key, api_secret, testnet=True)
 
-            #strat = normalizedRatio(n=72, interval='1h', ticker_list=tickers_to_trade, pair_map=pair_map, client=client)
-            #param_map = strat.fit()
+            # strat = normalizedRatio(n=72, interval='1h', ticker_list=tickers_to_trade, pair_map=pair_map, client=client)
+            # param_map = strat.fit()
 
             socket_status = start_multiplex_socket()
-            close_all_positions()
+
+            prepare_for_trading()
+
             counter = 0
             while socket_status is True and counter < 10:  # and twm.is_alive() is True: ??? or maybe "and keep_trading
 
@@ -182,7 +224,6 @@ def main():
             close_all_positions()
             # logger.critical(e, exc_info=True)
             # logger.handlers.clear()
-
 
         twm.stop()
         print('ran all the way to the end')
