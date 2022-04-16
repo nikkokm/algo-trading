@@ -10,6 +10,7 @@ from binance import ThreadedWebsocketManager
 from binance.enums import *
 from binance.exceptions import BinanceAPIException
 
+
 """ HELPER FUNCTIONS """
 
 
@@ -220,7 +221,7 @@ def start_multiplex_socket(testnet):
 def start_account_socket(testnet):
     global twm_account
 
-    # TODO: this method does raises asyncio error
+    # TODO: this method does raises asyncio error on testnet
     # TODO: Try with client.futures_stream_get_listen_key() and keepalive
 
     try:
@@ -382,7 +383,7 @@ def main():
     pair_map = {
         'BTCUSDT': 'ETHUSDT'
     }
-    leverage = 5
+    leverage = 10
     recalibrate_frequency = 24  # In hours (how often to re-fit strategy)
     take_profit_level = 0.02
     stop_loss_level = -0.02
