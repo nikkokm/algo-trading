@@ -10,7 +10,6 @@ from binance import ThreadedWebsocketManager
 from binance.enums import *
 from binance.exceptions import BinanceAPIException
 
-
 """ HELPER FUNCTIONS """
 
 
@@ -54,10 +53,14 @@ def get_open_pair_positions():
         if res[0]['positionAmt'] != 0:
             positions.append(res[0]['symbol'])
 
+    # If we have no positions, we can exit out of the function here
+    if len(positions) == 0:
+        return []
+
     # Check which open positions are in the pair_map to deduce which spreads we are currently trading
     pairs = []
-    for k,v in pair_map.items():
-        if k in positions and  v in positions:
+    for k, v in pair_map.items():
+        if k in positions and v in positions:
             pairs.append(f'{k}/{v}')
 
     return pairs
@@ -88,15 +91,15 @@ def compute_return_on_spread(pair):
     bot_unrealized_pnl = bot_current_notional_value - bot_initial_notional_value
 
     # Compute weights for each currency in the pair. Should ideally be around 50/50
-    top_weight = abs(top_current_notional_value)/abs_total_current_notional
-    bot_weight = abs(bot_current_notional_value)/abs_total_current_notional
+    top_weight = abs(top_current_notional_value) / abs_total_current_notional
+    bot_weight = abs(bot_current_notional_value) / abs_total_current_notional
 
     # Compute %-returns on each currency
-    top_unrealized_ret = (top_unrealized_pnl)/top_initial_notional_value * leverage
-    bot_unrealized_ret = (bot_unrealized_pnl)/bot_initial_notional_value * leverage
+    top_unrealized_ret = (top_unrealized_pnl) / top_initial_notional_value * leverage
+    bot_unrealized_ret = (bot_unrealized_pnl) / bot_initial_notional_value * leverage
 
     # Computed the weighted average / return on this spread position
-    spread_return = (top_unrealized_ret*top_weight) + (bot_unrealized_ret*bot_weight)
+    spread_return = (top_unrealized_ret * top_weight) + (bot_unrealized_ret * bot_weight)
 
     return spread_return
 
@@ -109,6 +112,9 @@ def cancel_open_orders():
 
 
 def close_all_positions():
+
+    # TODO: Better to use client.futures_place_batch_order() ?
+
     res = client.futures_account()
 
     for ticker in tickers_to_trade:
@@ -119,8 +125,79 @@ def close_all_positions():
                 client.futures_create_order(symbol=ticker,
                                             side=SIDE_SELL if position_amount > 0 else SIDE_BUY,
                                             type=ORDER_TYPE_MARKET,
-                                            quantity=position_amount)
+                                            quantity=abs(position_amount))
     return
+
+
+def compute_quantities_to_trade(pair):
+    top_ticker = pair.split('/')[0]
+    bot_ticker = pair.split('/')[1]
+
+    res = client.futures_account()
+    available_capital = float(res['availableBalance'])
+    investable_capital = available_capital*fraction_of_avbl_capital_to_trade
+    investable_capital_pr_leg = investable_capital/2
+
+    quantity_map = dict.fromkeys([top_ticker, bot_ticker], None)
+
+    for ticker in [top_ticker, bot_ticker]:
+        res = client.futures_symbol_ticker(symbol=ticker)
+        last_price = float(res['price'])
+        quantity = investable_capital_pr_leg/last_price
+        quantity_map[ticker] = quantity
+
+    return quantity_map
+
+
+def open_single_pair_position(quantity_map, long):
+
+    # long: bool. do we long or short the spread
+
+    # Does not work :(
+    # batch = [
+    #    {
+    #        'symbol': 'BTCUSDT',
+    #        'side': SIDE_SELL,
+    #        'type': ORDER_TYPE_MARKET,
+    #        'quantity': 0.3
+    #    },
+    #    {
+    #        'symbol': 'ETHUSDT',
+    #        'side': SIDE_BUY,
+    #        'type': ORDER_TYPE_MARKET,
+    #        'quantity': 0.652
+    #    }
+    # ]
+    # client.futures_place_batch_order(batchOrders=batch)
+
+    for k, v in quantity_map.items():
+        if long:
+            client.futures_create_order(symbol=k,
+                                        side=SIDE_BUY if k == list(quantity_map.keys())[0] else SIDE_SELL,
+                                        type=ORDER_TYPE_MARKET,
+                                        quantity=round(v, 3))
+        else:
+            client.futures_create_order(symbol=k,
+                                        side=SIDE_SELL if k == list(quantity_map.keys())[0] else SIDE_BUY,
+                                        type=ORDER_TYPE_MARKET,
+                                        quantity=round(v, 3))
+
+
+def close_single_pair_position(pair):
+    top_ticker = pair.split('/')[0]
+    bot_ticker = pair.split('/')[1]
+
+    tickers = [top_ticker, bot_ticker]
+    for ticker in tickers:
+        position = client.futures_position_information(symbol=ticker)
+        position_amount = float(position[0]['positionAmt'])
+
+        if position_amount != 0:
+            client.futures_create_order(symbol=ticker,
+                                        side=SIDE_SELL if position_amount > 0 else SIDE_BUY,
+                                        type=ORDER_TYPE_MARKET,
+                                        quantity=abs(position_amount))
+
 
 
 """ MAIN FUNCTIONS """
@@ -144,6 +221,7 @@ def start_account_socket(testnet):
     global twm_account
 
     # TODO: this method does raises asyncio error
+    # TODO: Try with client.futures_stream_get_listen_key() and keepalive
 
     try:
         twm_account = ThreadedWebsocketManager(api_key=api_key, api_secret=api_secret, testnet=testnet)
@@ -151,7 +229,7 @@ def start_account_socket(testnet):
         twm_account.start_futures_user_socket(callback=process_account_messages)
 
         return True
-    
+
     except:
         twm_account.stop()
         return False
@@ -189,13 +267,15 @@ def process_market_messages(msg):
         sub_frame = pd.DataFrame(data=[row], columns=market_data_cols)
 
         # Change dtype to float and int
-        sub_frame[['Open price', 'Close price', 'High price', 'Low price', 'Volume']] = sub_frame[['Open price', 'Close price', 'High price', 'Low price', 'Volume']].astype(float)
+        sub_frame[['Open price', 'Close price', 'High price', 'Low price', 'Volume']] = sub_frame[
+            ['Open price', 'Close price', 'High price', 'Low price', 'Volume']].astype(float)
 
         # Convert timestamps to aware datestime objects. tz = 'Europe/Oslo'
         time_cols = [i for i in sub_frame.columns if ('time' in i)]
 
         for col in time_cols:
-            sub_frame[col] = pd.to_datetime(sub_frame[col].astype(str).str[:-3], unit='s').dt.tz_localize('UTC').dt.tz_convert('Europe/Oslo')
+            sub_frame[col] = pd.to_datetime(sub_frame[col].astype(str).str[:-3], unit='s').dt.tz_localize(
+                'UTC').dt.tz_convert('Europe/Oslo')
 
         df_market_messages = pd.concat([df_market_messages, sub_frame], ignore_index=True)
 
@@ -208,7 +288,8 @@ def process_market_messages(msg):
         df_market_messages.sort_values(by=['Event time', 'Ticker'], ascending=False, inplace=True)
 
         # We have "duplicates" in some rows because we discard the millisecond part of the timestamp
-        df_market_messages = df_market_messages[~df_market_messages.duplicated(subset=['Event time', 'Ticker'], keep='first')]
+        df_market_messages = df_market_messages[
+            ~df_market_messages.duplicated(subset=['Event time', 'Ticker'], keep='first')]
         df_market_messages.reset_index(drop=True, inplace=True)
 
         # When starting the socket, we will have the case where we don't have a datapoint for every ticker
@@ -217,12 +298,14 @@ def process_market_messages(msg):
 
         # Iterate over pair_map and compute ratios
         for (k, v) in pair_map.items():
-            df_most_recent_ratios[f'{k}/{v}'].iloc[0] = (df_market_messages[df_market_messages['Ticker'] == k].iloc[0]['Close price'] /
-                                                         df_market_messages[df_market_messages['Ticker'] == v].iloc[0]['Close price'])
+            df_most_recent_ratios[f'{k}/{v}'].iloc[0] = (
+                        df_market_messages[df_market_messages['Ticker'] == k].iloc[0]['Close price'] /
+                        df_market_messages[df_market_messages['Ticker'] == v].iloc[0]['Close price'])
 
         # Normalize the ratios using param_map
         for col in df_most_recent_ratios.columns:
-            df_most_recent_ratios[col] = df_most_recent_ratios[col].apply(lambda x: (x-param_map[f'{col}_mu'])/param_map[f'{col}_sigma'])
+            df_most_recent_ratios[col] = df_most_recent_ratios[col].apply(
+                lambda x: (x - param_map[f'{col}_mu']) / param_map[f'{col}_sigma'])
 
 
 def process_account_messages(msg):
@@ -231,18 +314,46 @@ def process_account_messages(msg):
 
 def run_trade_logic():
     try:
-        print('doing some real trading in here yooo')
-        # 1. Check current positions
-        #     a. If Open positions, do risk management (whichever part of it cannot be baked into orders)
-        #     b. if no open positions do nothing
+        # TODO: Potential issues: we may be invested in a spread for too long, without it giving any losses or profits
+        # TODO: Position sizing is static, lel
 
+        # Get open pairs
+        pairs = get_open_pair_positions()
 
-        # 2. Check if BUY/SELL conditions met wrt. normalized ratio
-        #     a. if NO, do nothing
-        #     b. if YES and no current positions: calculate optimal portfolio and buy it
-        #     c. if the signal is to LONG (SHORT) the spread but we are already LONG (SHORT), do nothing (for now)
-        #     d. if we are LONG (SHORT) the spread, and the signal is to SHORT (LONG) the spread:
-        #        Calculate optimal portfolio and necessary orders to move from current to optimal portfolio
+        # If we have open pairs, check if we want to close out the position
+        if len(pairs) != 0:
+            for pair in pairs:
+                spread_return = compute_return_on_spread(pair)
+                if spread_return < take_profit_level and spread_return > stop_loss_level:
+                    pass
+                elif spread_return > take_profit_level or spread_return < stop_loss_level:
+                    close_single_pair_position(pair)
+                    # TODO: Logging
+
+        # We may have sold some pairs, so we need to refresh the list
+        pairs = get_open_pair_positions()
+
+        for k, v in pair_map.items():
+            pair = f'{k}/{v}'
+            if pair in pairs:
+                # If we already have a position in this pair, and it was not closed out earlier, do nothing
+                continue
+            else:
+                signal = df_most_recent_ratios[pair].iloc[0]
+
+                # Long the spread
+                if signal >= signal_buy:
+                    quantity_map = compute_quantities_to_trade(pair)
+                    open_single_pair_position(quantity_map=quantity_map, long=True)
+
+                # Short the spread
+                elif signal <= signal_sell:
+                    quantity_map = compute_quantities_to_trade(pair)
+                    open_single_pair_position(quantity_map=quantity_map, long=False)
+
+                # Do nothing if signal is bound between the buy and sell signal threshold
+                elif signal_buy > signal > signal_sell:
+                    pass
 
         return True
 
@@ -250,9 +361,10 @@ def run_trade_logic():
         # TODO: logging
         return False
 
-#import pytz
-#timezone = pytz.timezone('Europe/Oslo')
-#datetime.datetime.fromtimestamp(1650019591, tz=timezone)
+
+# import pytz
+# timezone = pytz.timezone('Europe/Oslo')
+# datetime.datetime.fromtimestamp(1650019591, tz=timezone)
 
 
 def main():
@@ -260,6 +372,7 @@ def main():
 
     # Algo Settings
     global testnet, api_key, api_secret, streams, tickers_to_trade, pair_map, leverage
+    global take_profit_level, stop_loss_level, signal_buy, signal_sell, fraction_of_avbl_capital_to_trade
 
     testnet = True
     api_key = os.environ.get('binance_api')
@@ -270,9 +383,12 @@ def main():
         'BTCUSDT': 'ETHUSDT'
     }
     leverage = 5
-
-
-    recalibrate_frequency = 24  # In hours
+    recalibrate_frequency = 24  # In hours (how often to re-fit strategy)
+    take_profit_level = 0.02
+    stop_loss_level = -0.02
+    signal_buy = 2
+    signal_sell = -2
+    fraction_of_avbl_capital_to_trade = 0.9 # of the total capital available to trade, how much of it will we use to compute quantities (of crypto)to trade
 
     # Data and other objects
     # TODO: twm_market need not be declared global in main() ?
@@ -341,6 +457,5 @@ def main():
         run_algo = False
         # TODO: Before we quit, we might want to exit all open positions
 
-
-#if __name__ == '__main__':
+# if __name__ == '__main__':
 #    main()
