@@ -51,7 +51,7 @@ def get_open_pair_positions():
     positions = []
     for ticker in tickers_to_trade:
         res = client.futures_position_information(symbol=ticker)
-        if res[0]['positionAmt'] != 0:
+        if float(res[0]['positionAmt']) != 0:
             positions.append(res[0]['symbol'])
 
     # If we have no positions, we can exit out of the function here
@@ -131,20 +131,26 @@ def close_all_positions():
 
 
 def compute_quantities_to_trade(pair):
+
+    # TODO: This is not working right. Notional exposures are somewhat aligned but after opening a position
+    #       the available capital is way too high. Need to factor in leverage in the calculation
     top_ticker = pair.split('/')[0]
     bot_ticker = pair.split('/')[1]
 
     res = client.futures_account()
     available_capital = float(res['availableBalance'])
     investable_capital = available_capital*fraction_of_avbl_capital_to_trade
-    investable_capital_pr_leg = investable_capital/2
+    investable_capital_pr_leg = investable_capital/2 # if we set quantity = to this, below, we do not actually
+                                                     # spend this amount of capital, this will be our notional exposure
+
+    investable_capital_pr_leg_leveraged = investable_capital_pr_leg*leverage
 
     quantity_map = dict.fromkeys([top_ticker, bot_ticker], None)
 
     for ticker in [top_ticker, bot_ticker]:
         res = client.futures_symbol_ticker(symbol=ticker)
         last_price = float(res['price'])
-        quantity = investable_capital_pr_leg/last_price
+        quantity = investable_capital_pr_leg_leveraged/last_price
         quantity_map[ticker] = quantity
 
     return quantity_map
@@ -317,17 +323,21 @@ def run_trade_logic():
     try:
         # TODO: Potential issues: we may be invested in a spread for too long, without it giving any losses or profits
         # TODO: Position sizing is static, lel
+        # TODO: Another issue: we may take profit on a position only to re-open the exact same position again.
 
         # Get open pairs
         pairs = get_open_pair_positions()
 
         # If we have open pairs, check if we want to close out the position
         if len(pairs) != 0:
+            print('evaluating open positions')
             for pair in pairs:
                 spread_return = compute_return_on_spread(pair)
                 if spread_return < take_profit_level and spread_return > stop_loss_level:
+                    print(f'Keeping the {pair} position open. Unrealized return: {spread_return}')
                     pass
                 elif spread_return > take_profit_level or spread_return < stop_loss_level:
+                    print(f'closing position: {pair} Unrealized return: {spread_return}')
                     close_single_pair_position(pair)
                     # TODO: Logging
 
@@ -344,21 +354,25 @@ def run_trade_logic():
 
                 # Long the spread
                 if signal >= signal_buy:
+                    print(f'Going long on {pair}')
                     quantity_map = compute_quantities_to_trade(pair)
                     open_single_pair_position(quantity_map=quantity_map, long=True)
 
                 # Short the spread
                 elif signal <= signal_sell:
+                    print(f'Going short on {pair}')
                     quantity_map = compute_quantities_to_trade(pair)
                     open_single_pair_position(quantity_map=quantity_map, long=False)
 
                 # Do nothing if signal is bound between the buy and sell signal threshold
                 elif signal_buy > signal > signal_sell:
+                    print(f'Doing nothing with {pair}')
                     pass
 
         return True
 
     except:
+        print('Exception in run_trade_logic()')
         # TODO: logging
         return False
 
@@ -408,6 +422,8 @@ def main():
     next_recalibration_timestamp = run_timestamp + datetime.timedelta(hours=recalibrate_frequency)
 
     while run_algo is True:
+        print('in main loop')
+        client = Client(api_key, api_secret, testnet=testnet)
 
         # First check that Binance is live
         status = check_system_status()
@@ -417,13 +433,14 @@ def main():
             # TODO: Logging
 
         try:
-            client = Client(api_key, api_secret, testnet=testnet)
             strat = normalizedRatio(n=72, interval='1h', ticker_list=tickers_to_trade, pair_map=pair_map, client=client)
+            print('fitting strategy')
             param_map = strat.fit()
             socket_status = start_multiplex_socket(testnet=testnet)
+            print('preparing for trading')
             prepare_for_trading()
-            counter = 0  # TODO: Delete the counter crap for production
-            while socket_status is True and counter < 10:
+            while socket_status is True:
+                print('in inner loop')
 
                 if datetime.datetime.now() >= next_recalibration_timestamp:
                     # Break out of inner loop to re-fit strategy
@@ -433,10 +450,10 @@ def main():
                 try:
                     # All strategy-driven trading happens here
                     socket_status = run_trade_logic()  # TODO: Should probably not return socket_status..?
+                    print('ran trade logic')
                     sleep(5)
-                    counter += 1
 
-                except Exception as e:
+                except (Exception, RuntimeError) as e:
                     # logger.critical(e, exc_info=True)
                     # logger.handlers.clear()
                     twm_market.stop()
@@ -445,7 +462,7 @@ def main():
                     close_all_positions()
                     break
 
-        except Exception as e:
+        except (Exception, RuntimeError) as e:
             twm_market.stop()
             run_algo = False
             cancel_open_orders()
@@ -453,10 +470,7 @@ def main():
             # logger.critical(e, exc_info=True)
             # logger.handlers.clear()
 
-        twm_market.stop()
         print('ran all the way to the end')
-        run_algo = False
-        # TODO: Before we quit, we might want to exit all open positions
 
-# if __name__ == '__main__':
-#    main()
+if __name__ == '__main__':
+   main()
