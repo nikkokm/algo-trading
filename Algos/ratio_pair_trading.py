@@ -70,6 +70,9 @@ def get_open_pair_positions():
 def compute_return_on_spread(pair):
     # Compute the %-return from trading the spread, for a given pair - use get_open_pair_positions()
     # For now, we are going to use the mark price for unrealized return
+    # TODO: Probably somewhat problematic...
+    # TODO: Sometimes gives numbers that do not look aligned with the web interface...
+    #       e.g. both positions in the pair are red but the function says unrealized ret > 0
 
     top_ticker = pair.split('/')[0]
     bot_ticker = pair.split('/')[1]
@@ -132,8 +135,8 @@ def close_all_positions():
 
 def compute_quantities_to_trade(pair):
 
-    # TODO: This is not working right. Notional exposures are somewhat aligned but after opening a position
-    #       the available capital is way too high. Need to factor in leverage in the calculation
+    # TODO: Basically only works as long as we only have one pair in tickers_to_trade
+
     top_ticker = pair.split('/')[0]
     bot_ticker = pair.split('/')[1]
 
@@ -233,7 +236,7 @@ def start_account_socket(testnet):
     try:
         twm_account = ThreadedWebsocketManager(api_key=api_key, api_secret=api_secret, testnet=testnet)
         twm_account.start()
-        twm_account.start_futures_user_socket(callback=process_account_messages)
+        twm_account.start_futures_user_socket(callback=process_account_messages) # only exists in v1.0.16 but that version breaks the multiplex socket, lol
 
         return True
 
@@ -329,17 +332,30 @@ def run_trade_logic():
         pairs = get_open_pair_positions()
 
         # If we have open pairs, check if we want to close out the position
+        # TODO: We want to check against df_most_recent_ratios here, e.g. if the signal says sell and we have lost 1%, might as well sell now instead of wait
         if len(pairs) != 0:
             print('evaluating open positions')
+
             for pair in pairs:
                 spread_return = compute_return_on_spread(pair)
+                formatted_spread_return = f'{round(spread_return*100,2)}%'
+
+                # If our position has not moved a lot
                 if spread_return < take_profit_level and spread_return > stop_loss_level:
-                    print(f'Keeping the {pair} position open. Unrealized return: {spread_return}')
+                    print(f'Keeping the {pair} position open. Unrealized return: {formatted_spread_return}. Signal: {df_most_recent_ratios[pair].iloc[0]}')
                     pass
+
+                # If we have breached take_profit or stop_loss
                 elif spread_return > take_profit_level or spread_return < stop_loss_level:
-                    print(f'closing position: {pair} Unrealized return: {spread_return}')
-                    close_single_pair_position(pair)
-                    # TODO: Logging
+                    # ... but the signal would make us re-enter the same position, do nothing
+                    if spread_return > take_profit_level and (df_most_recent_ratios[pair].iloc[0] >= signal_buy or df_most_recent_ratios[pair].iloc[0] <= signal_sell):
+                        print(f'Could take {formatted_spread_return} profit/loss on {pair} but signal is still TRADE - Doing nothing!')
+                        pass
+
+                    else:
+                        print(f'closing position: {pair} Unrealized return: {formatted_spread_return} Signal: {df_most_recent_ratios[pair].iloc[0]}')
+                        close_single_pair_position(pair)
+                        # TODO: Logging
 
         # We may have sold some pairs, so we need to refresh the list
         pairs = get_open_pair_positions()
@@ -397,12 +413,12 @@ def main():
     pair_map = {
         'BTCUSDT': 'ETHUSDT'
     }
-    leverage = 10
-    recalibrate_frequency = 24  # In hours (how often to re-fit strategy)
+    leverage = 30
+    recalibrate_frequency = 3  # In hours (how often to re-fit strategy)
     take_profit_level = 0.02
     stop_loss_level = -0.02
-    signal_buy = 2
-    signal_sell = -2
+    signal_buy = 2.5
+    signal_sell = -2.5
     fraction_of_avbl_capital_to_trade = 0.9 # of the total capital available to trade, how much of it will we use to compute quantities (of crypto)to trade
 
     # Data and other objects
@@ -422,7 +438,6 @@ def main():
     next_recalibration_timestamp = run_timestamp + datetime.timedelta(hours=recalibrate_frequency)
 
     while run_algo is True:
-        print('in main loop')
         client = Client(api_key, api_secret, testnet=testnet)
 
         # First check that Binance is live
@@ -440,18 +455,17 @@ def main():
             print('preparing for trading')
             prepare_for_trading()
             while socket_status is True:
-                print('in inner loop')
 
                 if datetime.datetime.now() >= next_recalibration_timestamp:
                     # Break out of inner loop to re-fit strategy
+                    print('Time to recalibrate!')
                     twm_market.stop()
                     break
 
                 try:
                     # All strategy-driven trading happens here
                     socket_status = run_trade_logic()  # TODO: Should probably not return socket_status..?
-                    print('ran trade logic')
-                    sleep(5)
+                    sleep(0.1)
 
                 except (Exception, RuntimeError) as e:
                     # logger.critical(e, exc_info=True)
@@ -471,6 +485,10 @@ def main():
             # logger.handlers.clear()
 
         print('ran all the way to the end')
+        twm_market.stop()
+        run_algo = False
+        break
+
 
 if __name__ == '__main__':
    main()
